@@ -1,0 +1,46 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# 本地数据文件
+# prices.xlsx 由 Actions 自动 commit，不忽略
+# prices_full.db 每次运行自动重建，不需要 commit 到仓库
+prices_full.db
+
+# 生成文件（通过 GitHub Pages artifact 部署，不进 git history）
+price_dashboard.html
+index.html
+deploy_dist/
+_site/
+
+# 备份脚本（不需要上云）
+*_backup.py
+*_openrouter_backup.py
+*_computeprices_backup.py
+
+# 已废弃的腾讯云 COS 部署
+deploy_to_cos.py
+enable_cos_website.py
+
+# 已废弃的 Plotly JS（改用 ECharts CDN）
+plotly.min.js
+
+# 日志
+fetch_log.txt
+_cp_structure_seen.txt
+
+# 操作指南（仅本地参考）
+GITHUB_ACTIONS_MIGRATION.md
+
+# 密钥（敏感，勿提交）
+.env
+.cos.env
+
+# 已废弃的 EdgeOne 本地配置
+.edgeone/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+.workbuddy/
