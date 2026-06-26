@@ -663,6 +663,13 @@ def main():
     size_kb = round(os.path.getsize(OUTPUT_HTML) / 1024, 1)
     print(f"仪表盘已生成：{OUTPUT_HTML}（{size_kb} KB，ECharts CDN · 浅色商务风 v3）")
 
+    # 同时导出 JSON 供侧边栏 artifact 使用
+    json_path = os.path.join(SCRIPT_DIR, "prices_data.json")
+    payload = {"records": build_records(df), "meta": build_meta(df)}
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+    print(f"数据 JSON 已导出：{json_path}")
+
 
 if __name__ == "__main__":
     main()
