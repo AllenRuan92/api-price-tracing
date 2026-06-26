@@ -17,6 +17,7 @@ API 价格抓取脚本（tokenpricing 版，全量 + 自建历史）
 
 import os
 import sys
+import re
 import json
 import sqlite3
 import time
@@ -45,54 +46,34 @@ PROVIDER_DISPLAY = {
     "qwen": "Qwen",
     "moonshotai": "Kimi (Moonshot)",
     "moonshot": "Kimi (Moonshot)",
-    "bytedance": "豆包 (Doubao)",
-    "bytedance-seed": "豆包 (Doubao)",
-    "doubao": "豆包 (Doubao)",
 }
 
-# 12 个旗舰/次旗舰白名单（仅用于 prices.xlsx 和仪表盘展示）
-# 全量数据会全部入库，这里只是筛选展示用的子集
-FLAGSHIP_MODELS = {
-    "OpenAI": {
-        "旗舰": "openai/gpt-5.5-pro",
-        "次旗舰": "openai/gpt-5.5",
-    },
-    "Anthropic": {
-        "旗舰": "anthropic/claude-opus-4.8",
-        "次旗舰": "anthropic/claude-sonnet-4.6",
-    },
-    "Google": {
-        "旗舰": "google/gemini-3.1-pro-preview",
-        "次旗舰": "google/gemini-3.5-flash",
-    },
-    "智谱 (Z.ai)": {
-        "旗舰": "z-ai/glm-5.2",
-        "次旗舰": "z-ai/glm-5.1",
-    },
-    "MiniMax": {
-        "旗舰": "minimax/minimax-m3",
-        "次旗舰": "minimax/minimax-m2.7",
-    },
-    "Qwen": {
-        "旗舰": "qwen/qwen3.7-max",
-        "次旗舰": "qwen/qwen3.7-plus",
-    },
-    # Kimi 已确认匹配；豆包真旗舰(doubao-seed-2.0-pro)在数据源无价，改用有价的 Seed 2.0 代
-    "Kimi (Moonshot)": {
-        "旗舰": "moonshotai/kimi-k2.6",
-        "次旗舰": "moonshotai/kimi-k2.5",
-    },
-    "豆包 (Doubao)": {
-        "旗舰": "bytedance-seed/seed-2.0-lite",
-        "次旗舰": "bytedance-seed/seed-2.0-mini",
-    },
+# ---------- 旗舰系列动态识别规则 ----------
+# 不再写死具体型号，而是为每家定义"旗舰系列正则"：
+# 每天在该系列内按版本号排序，取最新一代=旗舰、上一代=次旗舰。
+# 这样型号换代（如 gpt-5.5-pro → gpt-6-pro）时自动跟上，趋势线连续不断。
+#
+# 正则用第 1 个捕获组提取"主版本号"（如 5.5、4.8、3.1），用于排序。
+# 正则需匹配 model_id 去掉厂商前缀后的"短名"（小写），并排除
+# fast/turbo/image/mini/lite/flash/air/coder/thinking 等变体与带日期戳的快照。
+#
+# 注：豆包(Doubao)真旗舰 seed-2.0-pro 在本数据源(tokenpricing)无价格，
+#     整个系列只有 lite/mini 有价，无法体现真实旗舰价，故不跟踪豆包。
+FLAGSHIP_SERIES = {
+    # OpenAI 用标准版(gpt-5.5/5.4)而非 pro 增强版：
+    # gpt-5.5-pro(出$180) 是类似 o1-pro 的特殊增强版，价格畸高，会拉变形横向对比；
+    # 标准版 gpt-5.5(出$30) 才与 opus-4.8(出$25) 同档可比。排除 pro/mini/nano/codex/chat/image 变体。
+    "OpenAI":          r"^gpt-(\d+(?:\.\d+)?)$",
+    "Anthropic":       r"^claude-opus-(\d+(?:\.\d+)?)$",
+    "Google":          r"^gemini-(\d+(?:\.\d+)?)-pro(?:-preview)?$",
+    "智谱 (Z.ai)":     r"^glm-(\d+(?:\.\d+)?)$",
+    "MiniMax":         r"^minimax-m(\d+(?:\.\d+)?)$",
+    "Qwen":            r"^qwen(\d+(?:\.\d+)?)-max$",
+    "Kimi (Moonshot)": r"^kimi-k(\d+(?:\.\d+)?)$",
 }
 
-# 反向映射：model_id -> (厂商显示名, 定位)
-MODEL_TO_TIER = {}
-for provider, tiers in FLAGSHIP_MODELS.items():
-    for tier, model_id in tiers.items():
-        MODEL_TO_TIER[model_id] = (provider, tier)
+# 跟踪厂商（与 FLAGSHIP_SERIES 一致）
+TRACKED_PROVIDERS = list(FLAGSHIP_SERIES.keys())
 
 # 旗舰 Excel 列定义（保持与旧版兼容，可视化脚本无需改）
 EXCEL_COLUMNS = [
@@ -254,16 +235,67 @@ def save_full_to_db(models, generated_at, today):
     return len(rows)
 
 
-def build_flagship_rows(models, today):
-    """从全量数据中筛出 12 个白名单模型，构建 Excel 行"""
-    rows = []
-    found = set()
-    for model_id, m in models.items():
-        if model_id not in MODEL_TO_TIER:
-            continue
-        provider, tier = MODEL_TO_TIER[model_id]
-        found.add(model_id)
+def _parse_version(verstr):
+    """把版本号字符串解析为可比较的元组。'5.5'->(5,5)，'4'->(4,0)，'4-1'->(4,1)"""
+    s = verstr.replace("-", ".")
+    parts = s.split(".")
+    try:
+        major = int(parts[0])
+        minor = int(parts[1]) if len(parts) > 1 else 0
+        return (major, minor)
+    except (ValueError, IndexError):
+        return (0, 0)
 
+
+def select_flagships(models):
+    """
+    按 FLAGSHIP_SERIES 规则，从全量数据中为每家动态挑出旗舰+次旗舰。
+    规则：在该家旗舰系列内，按版本号降序排列，最新一代=旗舰、上一代=次旗舰。
+    仅考虑有输出价格(>0)的型号。返回 {model_id: (厂商, 定位)}。
+    """
+    # 先按厂商归集候选：provider_display -> [(version_tuple, model_id, out_price), ...]
+    candidates = {p: [] for p in FLAGSHIP_SERIES}
+    seen_versions = {p: set() for p in FLAGSHIP_SERIES}  # 同版本去重(大小写/前缀重复)
+
+    for model_id, m in models.items():
+        provider_raw = m.get("provider", "")
+        provider = PROVIDER_DISPLAY.get(provider_raw, None)
+        if provider not in FLAGSHIP_SERIES:
+            continue
+
+        pricing = m.get("pricing", {}) or {}
+        out_price = _to_float(pricing.get("output_per_million"))
+        if out_price <= 0:  # 无价型号不参与
+            continue
+
+        short = model_id.split("/")[-1].lower()
+        match = re.match(FLAGSHIP_SERIES[provider], short, re.IGNORECASE)
+        if not match:
+            continue
+
+        ver = _parse_version(match.group(1))
+        if ver in seen_versions[provider]:
+            continue  # 同版本只保留第一个，避免大小写/前缀重复
+        seen_versions[provider].add(ver)
+        candidates[provider].append((ver, model_id))
+
+    # 每家按版本降序，取前两名
+    result = {}
+    for provider, items in candidates.items():
+        items.sort(key=lambda x: x[0], reverse=True)
+        if len(items) >= 1:
+            result[items[0][1]] = (provider, "旗舰")
+        if len(items) >= 2:
+            result[items[1][1]] = (provider, "次旗舰")
+    return result
+
+
+def build_flagship_rows(models, today):
+    """按系列规则动态挑出每家旗舰+次旗舰，构建 Excel 行"""
+    model_to_tier = select_flagships(models)
+    rows = []
+    for model_id, (provider, tier) in model_to_tier.items():
+        m = models[model_id]
         pricing = m.get("pricing", {}) or {}
         in_price = _to_float(pricing.get("input_per_million"))
         out_price = _to_float(pricing.get("output_per_million"))
@@ -282,18 +314,21 @@ def build_flagship_rows(models, today):
             "数据源": "tokenpricing",
         })
 
-    missing = set(MODEL_TO_TIER.keys()) - found
-    if missing:
-        log(f"⚠ 以下 {len(missing)} 个白名单模型未在全量数据中找到：")
-        for mid in sorted(missing):
-            p, t = MODEL_TO_TIER[mid]
-            log(f"   - [{p}/{t}] {mid}")
-        log("请检查并更新脚本顶部 FLAGSHIP_MODELS 配置。")
+    # 检查每家是否都凑齐了旗舰+次旗舰
+    for provider in TRACKED_PROVIDERS:
+        tiers_found = {tier for _, (p, tier) in model_to_tier.items() if p == provider}
+        missing = {"旗舰", "次旗舰"} - tiers_found
+        if missing:
+            log(f"⚠ {provider} 缺少 {'/'.join(missing)}（系列内有价型号不足两代），请检查 FLAGSHIP_SERIES 正则")
+
+    # 排序：按 TRACKED_PROVIDERS 顺序、旗舰在前
+    tier_order = {"旗舰": 0, "次旗舰": 1}
+    rows.sort(key=lambda r: (TRACKED_PROVIDERS.index(r["厂商"]), tier_order.get(r["定位"], 9)))
     return rows
 
 
 def save_flagship_to_excel(rows, today):
-    """12 个旗舰模型写入 Excel（同日覆盖）"""
+    """旗舰模型写入 Excel（同日覆盖）"""
     new_df = pd.DataFrame(rows, columns=EXCEL_COLUMNS)
 
     if os.path.exists(EXCEL_PATH):
@@ -331,15 +366,15 @@ def main():
     # 1) 全量写入 SQLite
     total = save_full_to_db(models, generated_at, today)
 
-    # 2) 筛出 12 个旗舰写入 Excel（供可视化）
+    # 2) 按系列规则动态挑出旗舰写入 Excel（供可视化）
     flagship_rows = build_flagship_rows(models, today)
     if not flagship_rows:
-        log("未匹配到任何白名单模型，退出")
+        log("未识别到任何旗舰模型，退出")
         sys.exit(1)
 
     counts = Counter(r["厂商"] for r in flagship_rows)
     summary = " / ".join(f"{k}: {v}" for k, v in counts.items())
-    log(f"旗舰匹配 {len(flagship_rows)}/{len(MODEL_TO_TIER)} 个 — {summary}")
+    log(f"旗舰动态识别 {len(flagship_rows)} 个（{len(TRACKED_PROVIDERS)} 家 × 旗舰+次旗舰）— {summary}")
 
     save_flagship_to_excel(flagship_rows, today)
 
