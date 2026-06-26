@@ -36,6 +36,13 @@ LOG_PATH = os.path.join(SCRIPT_DIR, "fetch_log.txt")
 # tokenpricing 当前价格数据库（GitHub raw，CDN 加速，不限流）
 PRICES_URL = "https://raw.githubusercontent.com/Atena-IT/tokenpricing/main/database/current/prices.json"
 
+# OpenRouter 价格补丁：仅用于修正 z-ai/智谱 的定价偏差
+# tokenpricing 聚合 z-ai 渠道时价格滞后/偏低（如 GLM-5.2 少报 ~40%）；
+# OpenRouter 是 z-ai 模型的权威报价来源，直接拉取可修正偏差。
+# 失败时自动降级（保留 tokenpricing 原始价格），不中断主流程。
+OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+OPENROUTER_PATCH_PROVIDERS = {"z-ai"}  # 只补充这些前缀的模型，其余厂商不受影响
+
 # 厂商显示名映射（tokenpricing 里智谱前缀是 z-ai/）
 PROVIDER_DISPLAY = {
     "openai": "OpenAI",
@@ -352,6 +359,52 @@ def save_flagship_to_excel(rows, today):
     log(f"旗舰数据已写入 {EXCEL_PATH}：本次 {len(rows)} 行，累计 {len(combined)} 行")
 
 
+def patch_prices_from_openrouter(models):
+    """
+    从 OpenRouter 补充 OPENROUTER_PATCH_PROVIDERS 中指定前缀的模型实时价格。
+    仅覆写已存在模型的定价字段，不新增/删除模型，不影响其他厂商。
+    OpenRouter 价格格式：per-token 字符串（"0.0000044"），需 x1,000,000 转为 per-million。
+    任何异常均降级处理：打印警告并返回原始 models，主流程不中断。
+    """
+    try:
+        headers = {"User-Agent": "API-Price-Tracer/1.0", "Accept": "application/json"}
+        r = requests.get(OPENROUTER_MODELS_URL, headers=headers, timeout=30)
+        r.raise_for_status()
+        or_data = r.json().get("data", [])
+    except Exception as e:
+        log(f"⚠ OpenRouter 补充价格失败，继续使用 tokenpricing 原始价格: {e}")
+        return models
+
+    patched = 0
+    for m in or_data:
+        model_id = m.get("id", "")
+        prefix = model_id.split("/")[0] if "/" in model_id else ""
+        if prefix not in OPENROUTER_PATCH_PROVIDERS:
+            continue
+        if model_id not in models:
+            continue  # 只更新已有模型，不增删条目
+
+        pricing = m.get("pricing", {}) or {}
+        try:
+            # OpenRouter 价格单位是 per-token（字符串），x 1,000,000 转为 per-million
+            inp = float(pricing.get("prompt") or 0) * 1_000_000
+            out = float(pricing.get("completion") or 0) * 1_000_000
+        except (TypeError, ValueError):
+            continue
+        if out <= 0:
+            continue
+
+        old_out = _to_float((models[model_id].get("pricing") or {}).get("output_per_million"))
+        models[model_id].setdefault("pricing", {})
+        models[model_id]["pricing"]["input_per_million"] = inp
+        models[model_id]["pricing"]["output_per_million"] = out
+        log(f"  GLM 价格更新: {model_id}  出 ${old_out:.3f}/M -> ${out:.3f}/M")
+        patched += 1
+
+    log(f"OpenRouter 价格补丁完成：{patched} 个 z-ai 模型已更新")
+    return models
+
+
 def main():
     log("=" * 60)
     log("开始抓取 API 价格（tokenpricing 全量 + 自建历史）")
@@ -361,7 +414,10 @@ def main():
         log("未获取到模型数据，退出")
         sys.exit(1)
 
-    today = datetime.now().strftime("%Y-%m-%d")  # GitHub Actions 在 UTC 1:00 跑，对应北京时间 9:00，日期一致
+    # 补充智谱 GLM 的实时价格（OpenRouter 为权威来源，tokenpricing 聚合偏差约 30~40%）
+    models = patch_prices_from_openrouter(models)
+
+    today = datetime.now().strftime("%Y-%m-%d")  # GitHub Actions 在 UTC 1:17 跑，对应北京时间 9:17，日期一致
 
     # 1) 全量写入 SQLite
     total = save_full_to_db(models, generated_at, today)
@@ -378,7 +434,7 @@ def main():
 
     save_flagship_to_excel(flagship_rows, today)
 
-    log(f"完成：全量 {total} 模型 → DB；旗舰 {len(flagship_rows)} → Excel")
+    log(f"完成：全量 {total} 模型 -> DB；旗舰 {len(flagship_rows)} -> Excel")
     log("=" * 60)
 
 
