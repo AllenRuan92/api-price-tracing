@@ -209,7 +209,7 @@ def build_html(df):
     <div class="hd">
       <div>
         <h3>价格趋势</h3>
-        <div class="desc">实线＝旗舰，虚线＝次旗舰；按厂商筛选、切换时间/口径/视图</div>
+        <div class="desc">实线＝旗舰，虚线＝次旗舰；单击厂商=只看该家，再点或点「全部厂商」恢复</div>
       </div>
       <div class="controls">
         <div class="seg" id="seg_range">
@@ -349,8 +349,12 @@ function renderChips(){
     c.dataset.p = p;
     c.innerHTML = `<span class="dot" style="background:${COLORS[p]}"></span>${shortName(p)}`;
     c.onclick = ()=>{
-      if(state.providers.has(p)) state.providers.delete(p); else state.providers.add(p);
-      if(state.providers.size===0) state.providers.add(p);
+      // 单击=只看这一家；若当前已是"只剩这一家"，再点则恢复全部
+      if(state.providers.size===1 && state.providers.has(p)){
+        state.providers = new Set(ORDER);
+      } else {
+        state.providers = new Set([p]);
+      }
       syncChips(); drawTrend();
     };
     box.appendChild(c);
@@ -417,10 +421,10 @@ function drawTrend(){
 
   trendChart.setOption({
     graphic: hint,
-    tooltip:{ trigger:"axis", confine:true, order:"valueDesc",
+    tooltip:{ trigger:"axis", confine:true, enterable:true, order:"valueDesc",
       extraCssText:"max-height:340px;overflow:auto;", valueFormatter },
     legend:{ type:"scroll", bottom:0, textStyle:{fontSize:11,color:"#5A6273"}, icon:"roundRect" },
-    grid:{ left:62, right:24, top:18, bottom:54 },
+    grid:{ left:62, right:48, top:18, bottom:54 },
     xAxis:{ type:"category", boundaryGap:false, data:dates,
             axisLine:{lineStyle:{color:"#E5E8EF"}},
             axisLabel:{color:"#8A92A6",fontSize:11,interval:dates.length>10?"auto":0},
@@ -507,10 +511,10 @@ function drawScatter(){
     tooltip:{ trigger:"item", formatter:p=>`${p.data.name}<br/>输入 $${p.value[0]}/M<br/>输出 $${p.value[1]}/M` },
     legend:{ type:"scroll", bottom:0, textStyle:{fontSize:11,color:"#5A6273"}, icon:"circle" },
     grid:{ left:54, right:20, top:16, bottom:44 },
-    xAxis:{ type:"value", name:"输入 $/M", nameTextStyle:{color:"#AEB4C2",fontSize:11},
-            splitLine:{lineStyle:{color:"#F0F2F6"}}, axisLabel:{color:"#8A92A6",fontSize:11} },
-    yAxis:{ type:"value", name:"输出 $/M", nameTextStyle:{color:"#AEB4C2",fontSize:11},
-            splitLine:{lineStyle:{color:"#F0F2F6"}}, axisLabel:{color:"#8A92A6",fontSize:11} },
+    xAxis:{ type:"log", name:"输入 $/M（对数）", nameTextStyle:{color:"#AEB4C2",fontSize:11},
+            min:0.1, splitLine:{lineStyle:{color:"#F0F2F6"}}, axisLabel:{color:"#8A92A6",fontSize:11,formatter:"${value}"} },
+    yAxis:{ type:"log", name:"输出 $/M（对数）", nameTextStyle:{color:"#AEB4C2",fontSize:11},
+            min:0.1, splitLine:{lineStyle:{color:"#F0F2F6"}}, axisLabel:{color:"#8A92A6",fontSize:11,formatter:"${value}"} },
     series
   });
 }
