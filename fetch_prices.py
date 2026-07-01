@@ -36,12 +36,6 @@ LOG_PATH = os.path.join(SCRIPT_DIR, "fetch_log.txt")
 # tokenpricing 当前价格数据库（GitHub raw，CDN 加速，不限流）
 PRICES_URL = "https://raw.githubusercontent.com/Atena-IT/tokenpricing/main/database/current/prices.json"
 
-# OpenRouter 价格补丁：仅用于修正 z-ai/智谱 的定价偏差
-# tokenpricing 聚合 z-ai 渠道时价格滞后/偏低（如 GLM-5.2 少报 ~40%）；
-# OpenRouter 是 z-ai 模型的权威报价来源，直接拉取可修正偏差。
-# 失败时自动降级（保留 tokenpricing 原始价格），不中断主流程。
-OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
-OPENROUTER_PATCH_PROVIDERS = {"z-ai"}  # 只补充这些前缀的模型，其余厂商不受影响
 
 # 厂商显示名映射（tokenpricing 里智谱前缀是 z-ai/）
 PROVIDER_DISPLAY = {
@@ -53,6 +47,7 @@ PROVIDER_DISPLAY = {
     "qwen": "Qwen",
     "moonshotai": "Kimi (Moonshot)",
     "moonshot": "Kimi (Moonshot)",
+    "deepseek": "DeepSeek",
 }
 
 # ---------- 旗舰系列动态识别规则 ----------
@@ -79,8 +74,19 @@ FLAGSHIP_SERIES = {
     "Kimi (Moonshot)": r"^kimi-k(\d+(?:\.\d+)?)$",
 }
 
-# 跟踪厂商（与 FLAGSHIP_SERIES 一致）
-TRACKED_PROVIDERS = list(FLAGSHIP_SERIES.keys())
+# ---------- 特殊厂商：同代双档（pro=旗舰 / flash=次旗舰）----------
+# DeepSeek 不像别家用"相邻两代"区分旗舰/次旗舰，而是同一代里分高配 pro 和轻量 flash。
+# 命名规则 deepseek-vX-pro / deepseek-vX-flash，X 为版本号。
+# 取最新版本号的 pro 当旗舰、最新版本号的 flash 当次旗舰。
+FLAGSHIP_SERIES_TIERED = {
+    "DeepSeek": {
+        "旗舰":   r"^deepseek-v(\d+(?:\.\d+)?)-pro$",
+        "次旗舰": r"^deepseek-v(\d+(?:\.\d+)?)-flash$",
+    },
+}
+
+# 跟踪厂商（常规系列 + 特殊双档系列）
+TRACKED_PROVIDERS = list(FLAGSHIP_SERIES.keys()) + list(FLAGSHIP_SERIES_TIERED.keys())
 
 # 旗舰 Excel 列定义（保持与旧版兼容，可视化脚本无需改）
 EXCEL_COLUMNS = [
@@ -294,6 +300,28 @@ def select_flagships(models):
             result[items[0][1]] = (provider, "旗舰")
         if len(items) >= 2:
             result[items[1][1]] = (provider, "次旗舰")
+
+    # ---- 特殊双档厂商（DeepSeek）：同代 pro=旗舰 / flash=次旗舰 ----
+    # 每个定位各自在该家命中的型号里按版本号取最新一个。
+    for provider, tier_patterns in FLAGSHIP_SERIES_TIERED.items():
+        for tier, pattern in tier_patterns.items():
+            best = None  # (version_tuple, model_id)
+            for model_id, m in models.items():
+                if PROVIDER_DISPLAY.get(m.get("provider", ""), None) != provider:
+                    continue
+                out_price = _to_float((m.get("pricing", {}) or {}).get("output_per_million"))
+                if out_price <= 0:
+                    continue
+                short = model_id.split("/")[-1].lower()
+                mt = re.match(pattern, short, re.IGNORECASE)
+                if not mt:
+                    continue
+                ver = _parse_version(mt.group(1))
+                if best is None or ver > best[0]:
+                    best = (ver, model_id)
+            if best is not None:
+                result[best[1]] = (provider, tier)
+
     return result
 
 
@@ -359,52 +387,6 @@ def save_flagship_to_excel(rows, today):
     log(f"旗舰数据已写入 {EXCEL_PATH}：本次 {len(rows)} 行，累计 {len(combined)} 行")
 
 
-def patch_prices_from_openrouter(models):
-    """
-    从 OpenRouter 补充 OPENROUTER_PATCH_PROVIDERS 中指定前缀的模型实时价格。
-    仅覆写已存在模型的定价字段，不新增/删除模型，不影响其他厂商。
-    OpenRouter 价格格式：per-token 字符串（"0.0000044"），需 x1,000,000 转为 per-million。
-    任何异常均降级处理：打印警告并返回原始 models，主流程不中断。
-    """
-    try:
-        headers = {"User-Agent": "API-Price-Tracer/1.0", "Accept": "application/json"}
-        r = requests.get(OPENROUTER_MODELS_URL, headers=headers, timeout=30)
-        r.raise_for_status()
-        or_data = r.json().get("data", [])
-    except Exception as e:
-        log(f"⚠ OpenRouter 补充价格失败，继续使用 tokenpricing 原始价格: {e}")
-        return models
-
-    patched = 0
-    for m in or_data:
-        model_id = m.get("id", "")
-        prefix = model_id.split("/")[0] if "/" in model_id else ""
-        if prefix not in OPENROUTER_PATCH_PROVIDERS:
-            continue
-        if model_id not in models:
-            continue  # 只更新已有模型，不增删条目
-
-        pricing = m.get("pricing", {}) or {}
-        try:
-            # OpenRouter 价格单位是 per-token（字符串），x 1,000,000 转为 per-million
-            inp = float(pricing.get("prompt") or 0) * 1_000_000
-            out = float(pricing.get("completion") or 0) * 1_000_000
-        except (TypeError, ValueError):
-            continue
-        if out <= 0:
-            continue
-
-        old_out = _to_float((models[model_id].get("pricing") or {}).get("output_per_million"))
-        models[model_id].setdefault("pricing", {})
-        models[model_id]["pricing"]["input_per_million"] = inp
-        models[model_id]["pricing"]["output_per_million"] = out
-        log(f"  GLM 价格更新: {model_id}  出 ${old_out:.3f}/M -> ${out:.3f}/M")
-        patched += 1
-
-    log(f"OpenRouter 价格补丁完成：{patched} 个 z-ai 模型已更新")
-    return models
-
-
 def main():
     log("=" * 60)
     log("开始抓取 API 价格（tokenpricing 全量 + 自建历史）")
@@ -413,9 +395,6 @@ def main():
     if not models:
         log("未获取到模型数据，退出")
         sys.exit(1)
-
-    # 补充智谱 GLM 的实时价格（OpenRouter 为权威来源，tokenpricing 聚合偏差约 30~40%）
-    models = patch_prices_from_openrouter(models)
 
     today = datetime.now().strftime("%Y-%m-%d")  # GitHub Actions 在 UTC 1:17 跑，对应北京时间 9:17，日期一致
 

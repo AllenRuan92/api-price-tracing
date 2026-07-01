@@ -34,10 +34,11 @@ PROVIDER_COLORS = {
     "MiniMax": "#FF6B35",
     "Qwen": "#615CED",
     "Kimi (Moonshot)": "#1F2430",
+    "DeepSeek": "#9B59B6",
 }
 
 PROVIDER_ORDER = ["OpenAI", "Anthropic", "Google", "智谱 (Z.ai)",
-                  "MiniMax", "Qwen", "Kimi (Moonshot)"]
+                  "MiniMax", "Qwen", "Kimi (Moonshot)", "DeepSeek"]
 
 
 def load_data():
@@ -195,6 +196,7 @@ def build_html(df):
       <div class="sub">
         <span class="badge">tokenpricing 数据源</span>
         <span class="badge gray">OpenRouter + LiteLLM 聚合</span>
+        <span class="badge gray">美元国际站报价</span>
         <span id="sub_summary">旗舰 + 次旗舰 · 全量模型入库</span>
       </div>
     </div>
@@ -270,7 +272,7 @@ def build_html(df):
     </div>
   </div>
 
-  <div class="footer">由 API Price Tracing 自动生成 · 每日 9:00（北京）抓取更新 · 数据源 tokenpricing</div>
+  <div class="footer">由 API Price Tracing 自动生成 · 每日 9:00（北京）抓取更新 · 数据源 tokenpricing<br/>价格为各厂商美元国际站报价，便于横向对比；国内厂商（智谱/Qwen/Kimi/MiniMax/DeepSeek）的美元国际价可能与其人民币官方定价不同。</div>
 </div>
 
 <script>
