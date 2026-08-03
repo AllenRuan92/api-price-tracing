@@ -8,8 +8,9 @@ v3 在 v2 基础上改造价格趋势图，让"谁变了、变了多少"一眼�
   - 近期变动提示带：自动列出窗口内调价的模型（阈值 0.5%，涨红降跌绿）
   - 厂商简称：Kimi(Moonshot)→Kimi，避免 chips/图例过长
 
-数据来源：prices.xlsx（fetch_prices.py 产出，每天每家旗舰+次旗舰各 1 个）
+数据来源：prices.xlsx（fetch_prices.py 产出，每天每家主推档位各 1 个）
 生成文件：price_dashboard.html（单文件，零本地 JS 依赖，数据前端渲染）
+口径：跟踪每家当前主推产品线的档位价格——旗舰/主力/轻量三档，有几档展示几档。
 """
 
 import os
@@ -173,8 +174,9 @@ def build_html(df):
   tbody tr:hover{background:#FAFBFD}
   .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:middle}
   .tier-tag{font-size:11px;font-weight:600;padding:2px 7px;border-radius:6px}
-  .tier-tag.flag{background:#EEF2FF;color:#3B5BFE}
-  .tier-tag.sub{background:#FFF4E5;color:#C77700}
+  .tier-tag.t0{background:#EEF2FF;color:#3B5BFE}
+  .tier-tag.t1{background:#E7F7F0;color:#1FA971}
+  .tier-tag.t2{background:#FFF4E5;color:#C77700}
   .num{font-variant-numeric:tabular-nums}
   .chg{font-size:12px;font-weight:600}
   .chg.up{color:var(--up)} .chg.down{color:var(--down)} .chg.flat{color:#9aa1b1}
@@ -197,7 +199,7 @@ def build_html(df):
         <span class="badge">tokenpricing 数据源</span>
         <span class="badge gray">OpenRouter + LiteLLM 聚合</span>
         <span class="badge gray">美元国际站报价</span>
-        <span id="sub_summary">旗舰 + 次旗舰 · 全量模型入库</span>
+        <span id="sub_summary">主推档位 · 全量模型入库</span>
       </div>
     </div>
     <div class="updated">生成于 __GENERATED_AT__</div>
@@ -210,7 +212,7 @@ def build_html(df):
     <div class="hd">
       <div>
         <h3>价格趋势</h3>
-        <div class="desc">实线＝旗舰，虚线＝次旗舰；单击厂商=只看该家，再点或点「全部厂商」恢复</div>
+        <div class="desc">线型：实线＝旗舰，虚线＝主力，点线＝轻量；单击厂商=只看该家，再点或点「全部厂商」恢复</div>
       </div>
       <div class="controls">
         <div class="seg" id="seg_range">
@@ -239,11 +241,11 @@ def build_html(df):
 
   <div class="grid2">
     <div class="card">
-      <div class="hd"><div><h3>旗舰 vs 次旗舰</h3><div class="desc">最新输入价格对比</div></div></div>
+      <div class="hd"><div><h3>各家档位价格对比</h3><div class="desc">最新输入价格，按档位分组</div></div></div>
       <div id="c_compare" class="chart"></div>
     </div>
     <div class="card">
-      <div class="hd"><div><h3>输入 / 输出价格分布</h3><div class="desc">● 旗舰　◆ 次旗舰</div></div></div>
+      <div class="hd"><div><h3>输入 / 输出价格分布</h3><div class="desc">● 旗舰　◆ 主力　▲ 轻量</div></div></div>
       <div id="c_scatter" class="chart"></div>
     </div>
   </div>
@@ -262,7 +264,7 @@ def build_html(df):
         <thead><tr>
           <th data-key="provider">厂商</th>
           <th data-key="model_short">模型</th>
-          <th data-key="tier">定位</th>
+          <th data-key="tier">档位</th>
           <th data-key="input" class="num">输入价 ($/M)</th>
           <th data-key="output" class="num">输出价 ($/M)</th>
           <th data-key="chg" class="num">输入价涨跌</th>
@@ -288,6 +290,14 @@ const SHORT = {
   "智谱 (Z.ai)":"智谱", "Kimi (Moonshot)":"Kimi"
 };
 const shortName = p => SHORT[p] || p;
+
+// 档位配置：顺序、线型、散点符号、对比/排行的柱色、表格标签样式
+const TIERS = ["旗舰","主力","轻量"];
+const TIER_LINE = { "旗舰":{w:2.6,type:"solid"}, "主力":{w:1.9,type:"dashed"}, "轻量":{w:1.5,type:"dotted"} };
+const TIER_SYMBOL = { "旗舰":"circle", "主力":"diamond", "轻量":"triangle" };
+const TIER_BAR = { "旗舰":"#3B5BFE", "主力":"#1FA971", "轻量":"#F5A524" };
+const TIER_CLASS = { "旗舰":"t0", "主力":"t1", "轻量":"t2" };
+const tierRank = t => { const i=TIERS.indexOf(t); return i<0?9:i; };
 
 // ---- 状态 ----
 // range: 7|14|"all"；mode: abs 绝对价 / index 归一化指数；scale: log/value（仅绝对价生效）
@@ -325,7 +335,7 @@ function renderKPI(){
   const span = META.dates.length>1 ? (META.dates[0]+" ~ "+LATEST) : LATEST;
   const cards = [
     {label:"跟踪厂商", value:providers, note:"主流大模型厂商", bar:"#3B5BFE"},
-    {label:"跟踪模型", value:models, note:"旗舰 + 次旗舰", bar:"#10A37F"},
+    {label:"跟踪模型", value:models, note:"旗舰 / 主力 / 轻量档位", bar:"#10A37F"},
     {label:"数据跨度", value:META.dates.length+" 天", note:span, bar:"#FF6B35", small:true},
   ];
   document.getElementById("kpis").innerHTML = cards.map(c=>`
@@ -378,11 +388,11 @@ function drawTrend(){
   const baseDate = dates[0];
   const isIndex = state.mode==="index";
 
-  // 按「厂商+定位」分组（而非具体型号），这样型号换代时同一条线连续不断。
+  // 按「厂商+档位」分组（而非具体型号），这样型号换代时同一条线连续不断。
   // 每天取该组当天对应的型号价格；型号名记录在数据点上供 tooltip 显示。
   const groups = [];
   ORDER.filter(p=>state.providers.has(p)).forEach(p=>{
-    ["旗舰","次旗舰"].forEach(tier=>{
+    TIERS.forEach(tier=>{
       const rowsAll = DATA.filter(d=>d.provider===p && d.tier===tier && !d.is_free);
       if(rowsAll.length===0) return;
       groups.push({provider:p, tier, rows:rowsAll});
@@ -390,7 +400,7 @@ function drawTrend(){
   });
 
   const series = groups.map(g=>{
-    const isFlag = g.tier==="旗舰";
+    const ls = TIER_LINE[g.tier] || {w:1.8,type:"solid"};
     const atDate = dt=>{ const r=g.rows.find(x=>x.date===dt); return r||null; };
     const baseRow = atDate(baseDate);
     const base = baseRow? baseRow[io] : null;
@@ -404,7 +414,7 @@ function drawTrend(){
     return {
       name: shortName(g.provider)+"·"+g.tier,
       type:"line", data, connectNulls:true, smooth:false, symbolSize:6,
-      lineStyle:{ width: isFlag?2.6:1.8, type: isFlag?"solid":"dashed" },
+      lineStyle:{ width: ls.w, type: ls.type },
       itemStyle:{ color: COLORS[g.provider]||"#999" },
     };
   });
@@ -501,11 +511,16 @@ function renderChangeBar(){
 function drawCompare(){
   const latest = paidLatest();
   const cats = ORDER.filter(p=>latest.some(d=>d.provider===p));
-  const flag = cats.map(p=>{ const r=latest.find(d=>d.provider===p&&d.tier==="旗舰"); return r?r.input:0; });
-  const sub  = cats.map(p=>{ const r=latest.find(d=>d.provider===p&&d.tier==="次旗舰"); return r?r.input:0; });
+  // 每个存在的档位一组柱子，x 轴为厂商；缺档的厂商该档位为 0（不显示）
+  const tiersPresent = TIERS.filter(t=>latest.some(d=>d.tier===t));
+  const series = tiersPresent.map(t=>({
+    name:t, type:"bar",
+    data: cats.map(p=>{ const r=latest.find(d=>d.provider===p&&d.tier===t); return r?r.input:0; }),
+    itemStyle:{ color:TIER_BAR[t], borderRadius:[4,4,0,0] }, barMaxWidth:20,
+  }));
   compareChart.setOption({
     tooltip:{ trigger:"axis", axisPointer:{type:"shadow"}, valueFormatter:v=>"$"+Number(v).toFixed(3) },
-    legend:{ data:["旗舰","次旗舰"], top:0, textStyle:{fontSize:11,color:"#5A6273"}, icon:"roundRect" },
+    legend:{ data:tiersPresent, top:0, textStyle:{fontSize:11,color:"#5A6273"}, icon:"roundRect" },
     grid:{ left:48, right:18, top:34, bottom:50 },
     xAxis:{ type:"category", data:cats, axisLine:{lineStyle:{color:"#E5E8EF"}},
             axisTick:{show:false},
@@ -513,10 +528,7 @@ function drawCompare(){
                        formatter:v=>shortName(v)} },
     yAxis:{ type:"value", splitLine:{lineStyle:{color:"#F0F2F6"}},
             axisLabel:{color:"#8A92A6",fontSize:11,formatter:"${value}"} },
-    series:[
-      { name:"旗舰", type:"bar", data:flag, itemStyle:{color:"#3B5BFE",borderRadius:[4,4,0,0]}, barMaxWidth:24 },
-      { name:"次旗舰", type:"bar", data:sub, itemStyle:{color:"#9DB0FF",borderRadius:[4,4,0,0]}, barMaxWidth:24 },
-    ]
+    series
   });
 }
 
@@ -527,7 +539,7 @@ function drawScatter(){
     return {
       name:shortName(p), type:"scatter", symbolSize:15,
       itemStyle:{ color:COLORS[p], opacity:.9 },
-      data: rows.map(r=>({ value:[r.input,r.output], name:r.model_short, symbol: r.tier==="旗舰"?"circle":"diamond" }))
+      data: rows.map(r=>({ value:[r.input,r.output], name:r.model_short, symbol: TIER_SYMBOL[r.tier]||"circle" }))
     };
   });
   scatterChart.setOption({
@@ -548,7 +560,7 @@ function drawRank(){
   const cats = latest.map(d=>d.model_short+"（"+d.tier+"）");
   const vals = latest.map(d=>({
     value: Number(d.total.toFixed(3)),
-    itemStyle:{ color: d.tier==="旗舰"?"#3B5BFE":"#9DB0FF", borderRadius:[0,4,4,0] }
+    itemStyle:{ color: TIER_BAR[d.tier]||"#9DB0FF", borderRadius:[0,4,4,0] }
   }));
   rankChart.setOption({
     tooltip:{ trigger:"axis", axisPointer:{type:"shadow"}, valueFormatter:v=>"$"+Number(v).toFixed(2)+"/M" },
@@ -572,6 +584,7 @@ function renderTable(){
   rows.sort((a,b)=>{
     let va,vb;
     if(sortKey==="chg"){ va=a._chg?a._chg.pct:-1e9; vb=b._chg?b._chg.pct:-1e9; }
+    else if(sortKey==="tier"){ va=tierRank(a.tier); vb=tierRank(b.tier); }
     else { va=a[sortKey]; vb=b[sortKey]; }
     if(va==null) va=-1e9; if(vb==null) vb=-1e9;
     if(typeof va==="string") return sortAsc? va.localeCompare(vb,"zh"):vb.localeCompare(va,"zh");
@@ -583,9 +596,7 @@ function renderTable(){
       if(d._chg.dir==="flat") chg='<span class="chg flat">持平</span>';
       else chg=`<span class="chg ${d._chg.dir}">${d._chg.dir==="up"?"▲":"▼"} ${Math.abs(d._chg.pct).toFixed(1)}%</span>`;
     }
-    const tier = d.tier==="旗舰"
-      ? '<span class="tier-tag flag">旗舰</span>'
-      : '<span class="tier-tag sub">次旗舰</span>';
+    const tier = `<span class="tier-tag ${TIER_CLASS[d.tier]||'t0'}">${d.tier}</span>`;
     return `<tr>
       <td><span class="dot" style="background:${COLORS[d.provider]||'#ccc'}"></span>${shortName(d.provider)}</td>
       <td>${d.model_short}</td>
@@ -619,7 +630,7 @@ function init(){
   renderChips();
   const provCount = new Set(DATA.map(d=>d.provider)).size;
   document.getElementById("sub_summary").textContent =
-    provCount+" 家厂商 · 旗舰 + 次旗舰 · 全量模型入库";
+    provCount+" 家厂商 · 旗舰/主力/轻量档位 · 全量模型入库";
   syncScaleEnabled();
 
   drawTrend(); renderChangeBar(); drawCompare(); drawScatter(); drawRank();
