@@ -11,9 +11,9 @@ API 价格抓取脚本（tokenpricing 版，全量 + 自建历史）
   1. prices_full.db  (SQLite) — 全量 3200+ 模型每日快照，可长期累积百万行
   2. prices.xlsx     — 主推档位模型每日快照，供 visualize.py 直接读取展示
 
-口径（2026-08 改版）：不再按"旗舰/次旗舰（相邻两代）"，改为跟踪每家
-**当前主推的产品线档位**——旗舰 / 主力 / 轻量三档，每档各取该档最新版本。
-每家有几档就展示几档（Kimi/MiniMax 只有旗舰一档，DeepSeek 只有旗舰+轻量）。
+口径（2026-08-04 版）：只跟踪**各家当前主推的产品线**，不做强/中/弱档位划分。
+白名单里每条 = 厂商的一条真实产品线（如 OpenAI 的 GPT 主线、GPT mini 线），
+每条取该线最新版本；每家有几条主推线就几条（1 条或 2 条，不强凑）。
 """
 
 import os
@@ -51,66 +51,65 @@ PROVIDER_DISPLAY = {
     "deepseek": "DeepSeek",
 }
 
-# ---------- 主推档位动态识别规则 ----------
-# 口径：跟踪每家「当前主推产品线」的价格，按档位划分——
-#   旗舰(顶配大杯) / 主力(中杯) / 轻量(小杯)。
-# 不写死型号，而是为「每家每档」定义一条正则；每天在该档命中的型号里
-# 按版本号取最新一个。这样型号换代（gpt-5.5-mini → gpt-5.6-mini）自动跟上，
-# 趋势线按「厂商+档位」连续不断。
+# ---------- 主推产品线白名单 ----------
+# 口径：只跟踪各家**当前主推的产品线**，不做"强/中/弱三档"划分。
+# 三档口径已废弃——它会强行把各家塞进三个格子，导致同一家三档跨代（旗舰
+# gpt-5.5 配主力 gpt-5.4-mini）、甚至"主力"比"旗舰"更新更贵（Google
+# gemini-3.5-flash 出$9 vs gemini-3.1-pro 出$12），定位名实不符。
 #
-# 正则第 1 个捕获组提取版本号（用于同档内选最新），匹配 model_id 去掉厂商
-# 前缀后的「短名」（小写）。每家有几档就配几档，缺档不报错只告警。
+# 白名单每条 = 厂商的一条真实产品线，键是**稳定的产品线名**（厂商自己的命名，
+# 非主观分级），值是匹配该线的正则。正则第 1 个捕获组提版本号，每天在该线
+# 命中的型号里取版本最新的一个——所以 gpt-5.5→gpt-5.6 换代自动跟上，
+# 趋势线按"厂商+产品线"连续不断。
 #
-# 说明：
-#  - OpenAI 旗舰用标准版 gpt-5.5（非 pro 增强版）：pro 出$180 价格畸高会拉变形
-#    横向对比，标准版才与 opus 同档可比。mini=主力、nano=轻量。
-#  - Kimi(K 系列)、MiniMax(M 系列) 只有单一产品线，仅旗舰一档。
-#  - DeepSeek 用 vX-pro=旗舰 / vX-flash=轻量（无中杯主力）。
-#  - 豆包(Doubao) 真旗舰在本数据源无价，整系列只有 lite/mini，不跟踪。
+# 每家跟几条按实际主推情况定，不强求数量一致：
+#  - OpenAI / Anthropic / Google / Qwen 各 2 条（主线 + 廉价量产线）
+#  - 智谱 / Kimi / MiniMax / DeepSeek 各 1 条（只有单一主推线）
+# 增删产品线：直接改这个字典即可，visualize.py 会自动跟着变。
+#
+# 已刻意排除的型号（避免污染横向对比）：
+#  - 增强版：gpt-*-pro（出$180）、claude-*-fast、glm-*-turbo、*-max-thinking
+#  - 特供版：*-codex / *-chat / *-image / *-audio / *-search / *-vl / *-v（视觉）
+#  - 开源权重系列：gpt-oss-*、gemma-*、qwen3-235b 等按参数量命名的开放模型
+#  - 极廉价小杯：gpt-*-nano、gemini-*-flash-lite、glm-*-flash（非主推，噪声大）
+#  - 豆包(Doubao)：数据源对其真旗舰无报价，整家不跟踪
 _V = r"(\d+(?:\.\d+)?)"          # 版本号捕获组
-MODEL_TIERS = {
+WATCHLIST = {
     "OpenAI": {
-        "旗舰": rf"^gpt-{_V}$",
-        "主力": rf"^gpt-{_V}-mini$",
-        "轻量": rf"^gpt-{_V}-nano$",
+        "GPT": rf"^gpt-{_V}$",
+        "GPT mini": rf"^gpt-{_V}-mini$",
     },
     "Anthropic": {
-        "旗舰": rf"^claude-opus-{_V}$",
-        "主力": rf"^claude-sonnet-{_V}$",
-        "轻量": rf"^claude-haiku-{_V}$",
+        "Claude Opus": rf"^claude-opus-{_V}$",
+        "Claude Sonnet": rf"^claude-sonnet-{_V}$",
     },
     "Google": {
-        "旗舰": rf"^gemini-{_V}-pro(?:-preview)?$",
-        "主力": rf"^gemini-{_V}-flash(?:-preview)?$",
-        "轻量": rf"^gemini-{_V}-flash-lite(?:-preview)?$",
+        "Gemini Pro": rf"^gemini-{_V}-pro(?:-preview)?$",
+        "Gemini Flash": rf"^gemini-{_V}-flash(?:-preview)?$",
     },
     "智谱 (Z.ai)": {
-        "旗舰": rf"^glm-{_V}$",
-        "主力": rf"^glm-{_V}-air$",
-        "轻量": rf"^glm-{_V}-flash$",
+        "GLM": rf"^glm-{_V}$",
     },
     "Qwen": {
-        "旗舰": rf"^qwen{_V}-max(?:-preview)?$",
-        "主力": rf"^qwen{_V}-plus(?:-[\d-]+)?$",
-        "轻量": rf"^qwen{_V}-flash(?:-[\d-]+)?$",
+        "Qwen Max": rf"^qwen{_V}-max(?:-preview)?$",
+        "Qwen Plus": rf"^qwen{_V}-plus(?:-[\d-]+)?$",
     },
     "Kimi (Moonshot)": {
-        "旗舰": rf"^kimi-k{_V}$",
+        "Kimi K": rf"^kimi-k{_V}$",
     },
     "MiniMax": {
-        "旗舰": rf"^minimax-m{_V}$",
+        "MiniMax M": rf"^minimax-m{_V}$",
     },
     "DeepSeek": {
-        "旗舰": rf"^deepseek-v{_V}-pro$",
-        "轻量": rf"^deepseek-v{_V}-flash$",
+        "DeepSeek V": rf"^deepseek-v{_V}(?:-pro)?$",
     },
 }
 
-# 档位展示顺序（旗舰在前）
-TIER_ORDER = ["旗舰", "主力", "轻量"]
+# 跟踪厂商顺序（= 白名单书写顺序）
+TRACKED_PROVIDERS = list(WATCHLIST.keys())
 
-# 跟踪厂商顺序
-TRACKED_PROVIDERS = list(MODEL_TIERS.keys())
+# 产品线展示顺序：厂商内按白名单书写顺序（主线在前）
+SERIES_ORDER = {p: {s: i for i, s in enumerate(WATCHLIST[p])} for p in WATCHLIST}
 
 # 取价来源优先级：同一型号在多个渠道命名空间下都存在时，优先取国际站
 # OpenRouter 报价（与项目"美元国际站统一口径"一致），保证选中项稳定、可比。
@@ -122,11 +121,11 @@ def _source_rank(src):
         return 2
     return 1
 
-# 旗舰 Excel 列定义（保持与旧版兼容，可视化脚本无需改）
+# Excel 列定义（「定位」已改为「产品线」——不再是主观分级，而是厂商自己的产品线名）
 EXCEL_COLUMNS = [
     "抓取日期",
     "厂商",
-    "定位",
+    "产品线",
     "模型ID",
     "模型名称",
     "输入价格(美元/百万token)",
@@ -294,21 +293,22 @@ def _parse_version(verstr):
         return (0, 0)
 
 
-def select_tier_models(models):
+def select_watchlist_models(models):
     """
-    按 MODEL_TIERS 规则，为每家每档动态挑出当前主推型号。
-    规则：每档在命中该档正则的有价型号里，按 (版本号, 来源优先级, model_id) 降序取第一个
-    —— 版本最新优先；同版本优先 OpenRouter 国际站报价；再退化到 model_id 字典序保证确定性。
+    按 WATCHLIST 规则，为每家每条主推产品线动态挑出当前型号。
+    规则：每条线在命中该线正则的有价型号里，按 (版本号, 来源优先级, 非preview, model_id)
+    降序取第一个 —— 版本最新优先；同版本优先 OpenRouter 国际站报价；正式版优先于
+    preview；再退化到 model_id 字典序保证确定性。
     仅认第一方命名空间（前缀在 PROVIDER_DISPLAY），排除 bedrock/fireworks 等转售渠道。
-    返回 {model_id: (厂商, 档位)}。
+    返回 {model_id: (厂商, 产品线)}。
     """
-    # 收集候选：provider -> tier -> [(version, source_rank, model_id), ...]
-    cand = {p: {t: [] for t in MODEL_TIERS[p]} for p in MODEL_TIERS}
+    # 收集候选：provider -> series -> [(version, source_rank, is_preview, model_id), ...]
+    cand = {p: {s: [] for s in WATCHLIST[p]} for p in WATCHLIST}
 
     for model_id, m in models.items():
         ns = model_id.split("/")[0]
         provider = PROVIDER_DISPLAY.get(ns, None)
-        if provider not in MODEL_TIERS:
+        if provider not in WATCHLIST:
             continue  # 只认第一方命名空间
 
         pricing = m.get("pricing", {}) or {}
@@ -320,17 +320,17 @@ def select_tier_models(models):
         sources = m.get("sources", {}) or {}
         src = ",".join(sources.keys()) if sources else ""
         is_preview = ("preview" in short)
-        for tier, pattern in MODEL_TIERS[provider].items():
+        for series, pattern in WATCHLIST[provider].items():
             mt = re.match(pattern, short, re.IGNORECASE)
             if not mt:
                 continue
             ver = _parse_version(mt.group(1))
-            cand[provider][tier].append((ver, _source_rank(src), is_preview, model_id))
+            cand[provider][series].append((ver, _source_rank(src), is_preview, model_id))
 
-    # 每档取最优候选
+    # 每条产品线取最优候选
     result = {}
-    for provider, tiers in cand.items():
-        for tier, items in tiers.items():
+    for provider, series_map in cand.items():
+        for series, items in series_map.items():
             if not items:
                 continue
             # 多级稳定排序（按优先级从低到高依次排，利用 sort 稳定性）：
@@ -342,15 +342,15 @@ def select_tier_models(models):
             items.sort(key=lambda x: x[1], reverse=True)
             #   1) 版本号最新者优先
             items.sort(key=lambda x: x[0], reverse=True)
-            result[items[0][3]] = (provider, tier)
+            result[items[0][3]] = (provider, series)
     return result
 
 
-def build_flagship_rows(models, today):
-    """按档位规则动态挑出每家主推档位型号，构建 Excel 行"""
-    model_to_tier = select_tier_models(models)
+def build_watchlist_rows(models, today):
+    """按白名单规则动态挑出各家主推产品线型号，构建 Excel 行"""
+    model_to_series = select_watchlist_models(models)
     rows = []
-    for model_id, (provider, tier) in model_to_tier.items():
+    for model_id, (provider, series) in model_to_series.items():
         m = models[model_id]
         pricing = m.get("pricing", {}) or {}
         in_price = _to_float(pricing.get("input_per_million"))
@@ -360,7 +360,7 @@ def build_flagship_rows(models, today):
         rows.append({
             "抓取日期": today,
             "厂商": provider,
-            "定位": tier,
+            "产品线": series,
             "模型ID": model_id,
             "模型名称": m.get("display_name", model_id),
             "输入价格(美元/百万token)": round(in_price, 6),
@@ -370,29 +370,30 @@ def build_flagship_rows(models, today):
             "数据源": "tokenpricing",
         })
 
-    # 检查每家配置的档位是否都命中（缺档只告警，不报错——有些家本就没那档）
+    # 检查白名单里每条产品线是否都命中（缺失只告警不报错——可能该线尚未发布/暂无报价）
     for provider in TRACKED_PROVIDERS:
-        expected = set(MODEL_TIERS[provider].keys())
-        found = {tier for _, (p, tier) in model_to_tier.items() if p == provider}
+        expected = set(WATCHLIST[provider].keys())
+        found = {s for _, (p, s) in model_to_series.items() if p == provider}
         missing = expected - found
         if missing:
-            log(f"⚠ {provider} 缺少档位 {'/'.join(missing)}（该档正则本次无有价命中），请检查 MODEL_TIERS 正则")
+            log(f"⚠ {provider} 缺少产品线 {'/'.join(missing)}（该线正则本次无有价命中），请检查 WATCHLIST 正则")
 
-    # 排序：按 TRACKED_PROVIDERS 顺序、档位按 TIER_ORDER
-    tier_rank = {t: i for i, t in enumerate(TIER_ORDER)}
-    rows.sort(key=lambda r: (TRACKED_PROVIDERS.index(r["厂商"]), tier_rank.get(r["定位"], 9)))
+    # 排序：按 TRACKED_PROVIDERS 顺序，厂商内按白名单书写顺序
+    rows.sort(key=lambda r: (TRACKED_PROVIDERS.index(r["厂商"]),
+                             SERIES_ORDER.get(r["厂商"], {}).get(r["产品线"], 9)))
     return rows
 
 
-def save_flagship_to_excel(rows, today):
-    """旗舰模型写入 Excel（同日覆盖）"""
+def save_watchlist_to_excel(rows, today):
+    """主推产品线数据写入 Excel（同日覆盖）"""
     new_df = pd.DataFrame(rows, columns=EXCEL_COLUMNS)
 
     if os.path.exists(EXCEL_PATH):
         try:
             existing = pd.read_excel(EXCEL_PATH, sheet_name="价格数据")
-            if "定位" not in existing.columns:
-                log("检测到旧版数据结构，重置为新结构。")
+            if "产品线" not in existing.columns:
+                # 旧口径（含"定位"=旗舰/主力/轻量 或更早的旗舰/次旗舰）与新口径不可比，整表重置
+                log("检测到旧口径数据结构（无「产品线」列），重置为新结构。历史可用 backfill_history.py --rebuild 按新口径重算。")
                 combined = new_df
             else:
                 existing = existing[existing["抓取日期"] != today]
@@ -403,10 +404,10 @@ def save_flagship_to_excel(rows, today):
     else:
         combined = new_df
 
-    combined = combined.sort_values(["抓取日期", "厂商", "定位"]).reset_index(drop=True)
+    combined = combined.sort_values(["抓取日期", "厂商", "产品线"]).reset_index(drop=True)
     with pd.ExcelWriter(EXCEL_PATH, engine="openpyxl") as writer:
         combined.to_excel(writer, sheet_name="价格数据", index=False)
-    log(f"旗舰数据已写入 {EXCEL_PATH}：本次 {len(rows)} 行，累计 {len(combined)} 行")
+    log(f"主推产品线数据已写入 {EXCEL_PATH}：本次 {len(rows)} 行，累计 {len(combined)} 行")
 
 
 def main():
@@ -423,19 +424,19 @@ def main():
     # 1) 全量写入 SQLite
     total = save_full_to_db(models, generated_at, today)
 
-    # 2) 按系列规则动态挑出旗舰写入 Excel（供可视化）
-    flagship_rows = build_flagship_rows(models, today)
-    if not flagship_rows:
-        log("未识别到任何旗舰模型，退出")
+    # 2) 按白名单规则动态挑出各家主推产品线型号，写入 Excel（供可视化）
+    watch_rows = build_watchlist_rows(models, today)
+    if not watch_rows:
+        log("未识别到任何主推产品线模型，退出")
         sys.exit(1)
 
-    counts = Counter(r["厂商"] for r in flagship_rows)
+    counts = Counter(r["厂商"] for r in watch_rows)
     summary = " / ".join(f"{k}: {v}" for k, v in counts.items())
-    log(f"档位动态识别 {len(flagship_rows)} 个（{len(TRACKED_PROVIDERS)} 家 × 旗舰/主力/轻量）— {summary}")
+    log(f"主推产品线识别 {len(watch_rows)} 个型号（{len(TRACKED_PROVIDERS)} 家厂商）— {summary}")
 
-    save_flagship_to_excel(flagship_rows, today)
+    save_watchlist_to_excel(watch_rows, today)
 
-    log(f"完成：全量 {total} 模型 -> DB；旗舰 {len(flagship_rows)} -> Excel")
+    log(f"完成：全量 {total} 模型 -> DB；主推产品线 {len(watch_rows)} -> Excel")
     log("=" * 60)
 
 

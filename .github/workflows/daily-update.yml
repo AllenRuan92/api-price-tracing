@@ -5,6 +5,11 @@ on:
     # 北京时间 9:17（UTC 1:17）触发；错峰避开整点高峰，降低被 GitHub 跳过的概率
     - cron: '17 1 * * *'
   workflow_dispatch:  # 允许手动触发，用于测试
+    inputs:
+      rebuild_history:
+        description: '按当前口径重算全部历史（改了 WATCHLIST 白名单后勾一次）'
+        type: boolean
+        default: false
 
 permissions:
   contents: write   # 允许 Actions 提交数据回仓库
@@ -34,6 +39,13 @@ jobs:
 
       - name: Fetch prices
         run: python fetch_prices.py
+
+      # 改了 WATCHLIST 白名单后，历史行仍是旧口径会造成假的价格跳变。
+      # 手动触发时勾选 rebuild_history，即从 tokenpricing 的 history 目录
+      # 把所有可得日期按当前口径整表重算。
+      - name: Rebuild history under current caliber
+        if: ${{ inputs.rebuild_history }}
+        run: python backfill_history.py --rebuild
 
       - name: Visualize dashboard
         run: python visualize.py

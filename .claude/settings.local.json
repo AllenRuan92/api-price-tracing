@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la .claude)",
+      "Bash(cat .claude/launch.json)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(ls .venv/Scripts/python*)",
+      "Bash(where py *)",
+      "Bash(.venv/Scripts/python.exe --version)"
+    ]
+  }
+}

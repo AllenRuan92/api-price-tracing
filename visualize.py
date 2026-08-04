@@ -8,9 +8,9 @@ v3 在 v2 基础上改造价格趋势图，让"谁变了、变了多少"一眼�
   - 近期变动提示带：自动列出窗口内调价的模型（阈值 0.5%，涨红降跌绿）
   - 厂商简称：Kimi(Moonshot)→Kimi，避免 chips/图例过长
 
-数据来源：prices.xlsx（fetch_prices.py 产出，每天每家主推档位各 1 个）
+数据来源：prices.xlsx（fetch_prices.py 产出，每天每家每条主推产品线各 1 个型号）
 生成文件：price_dashboard.html（单文件，零本地 JS 依赖，数据前端渲染）
-口径：跟踪每家当前主推产品线的档位价格——旗舰/主力/轻量三档，有几档展示几档。
+口径：只跟踪各家当前主推的产品线，不做强/中/弱档位划分；每家有几条主推线就几条。
 """
 
 import os
@@ -52,6 +52,25 @@ def load_data():
     return df
 
 
+def _series_order(df):
+    """
+    每家产品线的展示顺序。优先取 fetch_prices.WATCHLIST 的书写顺序（主线在前），
+    白名单里没有的（历史遗留产品线）按字母序追加在后，保证顺序确定、图例样式稳定。
+    """
+    try:
+        import fetch_prices as fp
+        preset = {p: list(s.keys()) for p, s in fp.WATCHLIST.items()}
+    except Exception:
+        preset = {}
+    out = {}
+    for provider, g in df.groupby("厂商"):
+        present = set(g["产品线"].dropna().astype(str))
+        ordered = [s for s in preset.get(provider, []) if s in present]
+        ordered += sorted(present - set(ordered))
+        out[provider] = ordered
+    return out
+
+
 def build_records(df):
     """把 DataFrame 序列化为前端可用的记录列表（一次性注入页面）"""
     records = []
@@ -63,7 +82,7 @@ def build_records(df):
         records.append({
             "date": r["抓取日期"],
             "provider": r["厂商"],
-            "tier": r["定位"],
+            "series": r["产品线"],
             "model_id": model_id,
             "model_short": model_short,
             "model_name": r.get("模型名称", model_short),
@@ -83,6 +102,7 @@ def build_meta(df):
         "prev": dates[-2] if len(dates) >= 2 else "",
         "provider_order": PROVIDER_ORDER,
         "provider_colors": PROVIDER_COLORS,
+        "series_order": _series_order(df),
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
 
@@ -173,10 +193,6 @@ def build_html(df):
   tbody td{padding:11px 10px;border-bottom:1px solid #F2F4F7}
   tbody tr:hover{background:#FAFBFD}
   .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:middle}
-  .tier-tag{font-size:11px;font-weight:600;padding:2px 7px;border-radius:6px}
-  .tier-tag.t0{background:#EEF2FF;color:#3B5BFE}
-  .tier-tag.t1{background:#E7F7F0;color:#1FA971}
-  .tier-tag.t2{background:#FFF4E5;color:#C77700}
   .num{font-variant-numeric:tabular-nums}
   .chg{font-size:12px;font-weight:600}
   .chg.up{color:var(--up)} .chg.down{color:var(--down)} .chg.flat{color:#9aa1b1}
@@ -199,7 +215,7 @@ def build_html(df):
         <span class="badge">tokenpricing 数据源</span>
         <span class="badge gray">OpenRouter + LiteLLM 聚合</span>
         <span class="badge gray">美元国际站报价</span>
-        <span id="sub_summary">主推档位 · 全量模型入库</span>
+        <span id="sub_summary">各家主推产品线</span>
       </div>
     </div>
     <div class="updated">生成于 __GENERATED_AT__</div>
@@ -212,7 +228,7 @@ def build_html(df):
     <div class="hd">
       <div>
         <h3>价格趋势</h3>
-        <div class="desc">线型：实线＝旗舰，虚线＝主力，点线＝轻量；单击厂商=只看该家，再点或点「全部厂商」恢复</div>
+        <div class="desc">一条线＝一条产品线（型号换代自动接续）；同色为同一厂商，实线/虚线区分该厂商的不同产品线；单击厂商=只看该家，再点或点「全部厂商」恢复</div>
       </div>
       <div class="controls">
         <div class="seg" id="seg_range">
@@ -241,11 +257,11 @@ def build_html(df):
 
   <div class="grid2">
     <div class="card">
-      <div class="hd"><div><h3>各家档位价格对比</h3><div class="desc">最新输入价格，按档位分组</div></div></div>
+      <div class="hd"><div><h3>最新输入价对比</h3><div class="desc">每根柱＝一个在跟踪的型号，按厂商配色分组</div></div></div>
       <div id="c_compare" class="chart"></div>
     </div>
     <div class="card">
-      <div class="hd"><div><h3>输入 / 输出价格分布</h3><div class="desc">● 旗舰　◆ 主力　▲ 轻量</div></div></div>
+      <div class="hd"><div><h3>输入 / 输出价格分布</h3><div class="desc">同色为同一厂商，形状区分该厂商的不同产品线；越靠左下越便宜</div></div></div>
       <div id="c_scatter" class="chart"></div>
     </div>
   </div>
@@ -264,7 +280,6 @@ def build_html(df):
         <thead><tr>
           <th data-key="provider">厂商</th>
           <th data-key="model_short">模型</th>
-          <th data-key="tier">档位</th>
           <th data-key="input" class="num">输入价 ($/M)</th>
           <th data-key="output" class="num">输出价 ($/M)</th>
           <th data-key="chg" class="num">输入价涨跌</th>
@@ -291,13 +306,18 @@ const SHORT = {
 };
 const shortName = p => SHORT[p] || p;
 
-// 档位配置：顺序、线型、散点符号、对比/排行的柱色、表格标签样式
-const TIERS = ["旗舰","主力","轻量"];
-const TIER_LINE = { "旗舰":{w:2.6,type:"solid"}, "主力":{w:1.9,type:"dashed"}, "轻量":{w:1.5,type:"dotted"} };
-const TIER_SYMBOL = { "旗舰":"circle", "主力":"diamond", "轻量":"triangle" };
-const TIER_BAR = { "旗舰":"#3B5BFE", "主力":"#1FA971", "轻量":"#F5A524" };
-const TIER_CLASS = { "旗舰":"t0", "主力":"t1", "轻量":"t2" };
-const tierRank = t => { const i=TIERS.indexOf(t); return i<0?9:i; };
+// 产品线配置：同一厂商用同一颜色，靠线型/符号区分它的不同产品线（非强弱分级，
+// 只是"该厂商第 1 / 第 2 条主推线"的视觉区分）。顺序来自 META.series_order。
+const SERIES_ORDER = META.series_order || {};
+const LINE_VARIANT   = [{w:2.6,type:"solid"},{w:1.9,type:"dashed"},{w:1.5,type:"dotted"}];
+const SYMBOL_VARIANT = ["circle","diamond","triangle","rect"];
+const seriesList = p => SERIES_ORDER[p] || [];
+const seriesIdx  = (p,s) => { const i = seriesList(p).indexOf(s); return i<0?0:i; };
+// 产品线名（GPT / Claude Opus / …）本身已自带厂商信息，图例直接用它；
+// 万一两家用了同名产品线，则加厂商前缀消歧，避免 ECharts 图例撞名。
+const _nameCount = {};
+DATA.forEach(d=>{ _nameCount[d.series] = (_nameCount[d.series]||new Set()).add(d.provider); });
+const legendName = (p,s) => (_nameCount[s] && _nameCount[s].size>1) ? (shortName(p)+"·"+s) : s;
 
 // ---- 状态 ----
 // range: 7|14|"all"；mode: abs 绝对价 / index 归一化指数；scale: log/value（仅绝对价生效）
@@ -335,7 +355,7 @@ function renderKPI(){
   const span = META.dates.length>1 ? (META.dates[0]+" ~ "+LATEST) : LATEST;
   const cards = [
     {label:"跟踪厂商", value:providers, note:"主流大模型厂商", bar:"#3B5BFE"},
-    {label:"跟踪模型", value:models, note:"旗舰 / 主力 / 轻量档位", bar:"#10A37F"},
+    {label:"跟踪模型", value:models, note:"各家主推产品线", bar:"#10A37F"},
     {label:"数据跨度", value:META.dates.length+" 天", note:span, bar:"#FF6B35", small:true},
   ];
   document.getElementById("kpis").innerHTML = cards.map(c=>`
@@ -388,19 +408,19 @@ function drawTrend(){
   const baseDate = dates[0];
   const isIndex = state.mode==="index";
 
-  // 按「厂商+档位」分组（而非具体型号），这样型号换代时同一条线连续不断。
+  // 按「厂商+产品线」分组（而非具体型号），这样型号换代时同一条线连续不断。
   // 每天取该组当天对应的型号价格；型号名记录在数据点上供 tooltip 显示。
   const groups = [];
   ORDER.filter(p=>state.providers.has(p)).forEach(p=>{
-    TIERS.forEach(tier=>{
-      const rowsAll = DATA.filter(d=>d.provider===p && d.tier===tier && !d.is_free);
+    seriesList(p).forEach(sname=>{
+      const rowsAll = DATA.filter(d=>d.provider===p && d.series===sname && !d.is_free);
       if(rowsAll.length===0) return;
-      groups.push({provider:p, tier, rows:rowsAll});
+      groups.push({provider:p, series:sname, rows:rowsAll});
     });
   });
 
   const series = groups.map(g=>{
-    const ls = TIER_LINE[g.tier] || {w:1.8,type:"solid"};
+    const ls = LINE_VARIANT[seriesIdx(g.provider,g.series)] || {w:1.8,type:"solid"};
     const atDate = dt=>{ const r=g.rows.find(x=>x.date===dt); return r||null; };
     const baseRow = atDate(baseDate);
     const base = baseRow? baseRow[io] : null;
@@ -412,7 +432,7 @@ function drawTrend(){
       return {value:val, model:r.model_short, raw};  // 带型号名和原始价
     });
     return {
-      name: shortName(g.provider)+"·"+g.tier,
+      name: legendName(g.provider, g.series),
       type:"line", data, connectNulls:true, smooth:false, symbolSize:6,
       lineStyle:{ width: ls.w, type: ls.type },
       itemStyle:{ color: COLORS[g.provider]||"#999" },
@@ -428,7 +448,7 @@ function drawTrend(){
   const yType = isIndex ? "value" : state.scale;
   const yName = isIndex ? "指数（窗口首日=100）"
                         : (state.scale==="log"?"$/百万 token（对数）":"$/百万 token");
-  // tooltip 用 formatter（能访问数据点上的 model 型号名）：显示「厂商·定位 型号 价格」
+  // tooltip 用 formatter（能访问数据点上的 model 型号名）：显示「产品线 型号 价格」
   const tipFormatter = params=>{
     if(!params || !params.length) return "";
     const date = params[0].axisValue;
@@ -510,26 +530,40 @@ function renderChangeBar(){
 
 function drawCompare(){
   const latest = paidLatest();
-  const cats = ORDER.filter(p=>latest.some(d=>d.provider===p));
-  // 每个存在的档位一组柱子，x 轴为厂商；缺档的厂商该档位为 0（不显示）
-  const tiersPresent = TIERS.filter(t=>latest.some(d=>d.tier===t));
-  const series = tiersPresent.map(t=>({
-    name:t, type:"bar",
-    data: cats.map(p=>{ const r=latest.find(d=>d.provider===p&&d.tier===t); return r?r.input:0; }),
-    itemStyle:{ color:TIER_BAR[t], borderRadius:[4,4,0,0] }, barMaxWidth:20,
+  // 一根柱=一个在跟踪的型号，按厂商顺序排列（同厂商的多条产品线相邻），厂商配色
+  const rows = [];
+  ORDER.forEach(p=>{
+    seriesList(p).forEach(sname=>{
+      const r = latest.find(d=>d.provider===p && d.series===sname);
+      if(r) rows.push(r);
+    });
+  });
+  const cats = rows.map(r=>r.model_short);
+  const vals = rows.map(r=>({
+    value: r.input,
+    itemStyle:{ color: COLORS[r.provider]||"#9DB0FF", borderRadius:[4,4,0,0] }
+  }));
+  // 图例只用来标厂商配色（用不画数据的占位 series 承载）
+  const legendProviders = [...new Set(rows.map(r=>r.provider))];
+  const legendStubs = legendProviders.map(p=>({
+    name: shortName(p), type:"bar", data:[], itemStyle:{color:COLORS[p]}
   }));
   compareChart.setOption({
-    tooltip:{ trigger:"axis", axisPointer:{type:"shadow"}, valueFormatter:v=>"$"+Number(v).toFixed(3) },
-    legend:{ data:tiersPresent, top:0, textStyle:{fontSize:11,color:"#5A6273"}, icon:"roundRect" },
-    grid:{ left:48, right:18, top:34, bottom:50 },
+    tooltip:{ trigger:"axis", axisPointer:{type:"shadow"},
+      formatter:params=>{
+        const i = params[0].dataIndex, r = rows[i];
+        return `${shortName(r.provider)} · ${r.series}<br/>${r.model_short}<br/>输入 <b>$${Number(r.input).toFixed(3)}</b>/M`;
+      } },
+    legend:{ data:legendProviders.map(shortName), top:0, textStyle:{fontSize:11,color:"#5A6273"},
+             icon:"roundRect", selectedMode:false },
+    grid:{ left:48, right:18, top:34, bottom:74 },
     xAxis:{ type:"category", data:cats, axisLine:{lineStyle:{color:"#E5E8EF"}},
             axisTick:{show:false},
-            axisLabel:{color:"#8A92A6",fontSize:11,interval:0,rotate:cats.length>6?20:0,
-                       formatter:v=>shortName(v)} },
+            axisLabel:{color:"#8A92A6",fontSize:10,interval:0,rotate:38} },
     yAxis:{ type:"value", splitLine:{lineStyle:{color:"#F0F2F6"}},
             axisLabel:{color:"#8A92A6",fontSize:11,formatter:"${value}"} },
-    series
-  });
+    series: [{ type:"bar", data:vals, barMaxWidth:22 }].concat(legendStubs)
+  }, true);
 }
 
 function drawScatter(){
@@ -539,11 +573,12 @@ function drawScatter(){
     return {
       name:shortName(p), type:"scatter", symbolSize:15,
       itemStyle:{ color:COLORS[p], opacity:.9 },
-      data: rows.map(r=>({ value:[r.input,r.output], name:r.model_short, symbol: TIER_SYMBOL[r.tier]||"circle" }))
+      data: rows.map(r=>({ value:[r.input,r.output], name:r.model_short, series:r.series,
+                           symbol: SYMBOL_VARIANT[seriesIdx(p,r.series)]||"circle" }))
     };
   });
   scatterChart.setOption({
-    tooltip:{ trigger:"item", formatter:p=>`${p.data.name}<br/>输入 $${p.value[0]}/M<br/>输出 $${p.value[1]}/M` },
+    tooltip:{ trigger:"item", formatter:p=>`${p.data.name}<br/><span style="color:#AEB4C2">${p.data.series||""}</span><br/>输入 $${p.value[0]}/M<br/>输出 $${p.value[1]}/M` },
     legend:{ type:"scroll", bottom:0, textStyle:{fontSize:11,color:"#5A6273"}, icon:"circle" },
     grid:{ left:54, right:20, top:16, bottom:44 },
     xAxis:{ type:"log", name:"输入 $/M（对数）", nameTextStyle:{color:"#AEB4C2",fontSize:11},
@@ -557,14 +592,14 @@ function drawScatter(){
 function drawRank(){
   const latest = paidLatest().map(d=>({ ...d, total:(d.input||0)+(d.output||0) }))
                  .sort((a,b)=>b.total-a.total);
-  const cats = latest.map(d=>d.model_short+"（"+d.tier+"）");
+  const cats = latest.map(d=>d.model_short);
   const vals = latest.map(d=>({
     value: Number(d.total.toFixed(3)),
-    itemStyle:{ color: TIER_BAR[d.tier]||"#9DB0FF", borderRadius:[0,4,4,0] }
+    itemStyle:{ color: COLORS[d.provider]||"#9DB0FF", borderRadius:[0,4,4,0] }
   }));
   rankChart.setOption({
     tooltip:{ trigger:"axis", axisPointer:{type:"shadow"}, valueFormatter:v=>"$"+Number(v).toFixed(2)+"/M" },
-    grid:{ left:150, right:48, top:8, bottom:8 },
+    grid:{ left:130, right:48, top:8, bottom:8 },
     xAxis:{ type:"value", splitLine:{lineStyle:{color:"#F0F2F6"}},
             axisLabel:{color:"#8A92A6",fontSize:11,formatter:"${value}"} },
     yAxis:{ type:"category", data:cats, axisLine:{lineStyle:{color:"#E5E8EF"}},
@@ -584,7 +619,6 @@ function renderTable(){
   rows.sort((a,b)=>{
     let va,vb;
     if(sortKey==="chg"){ va=a._chg?a._chg.pct:-1e9; vb=b._chg?b._chg.pct:-1e9; }
-    else if(sortKey==="tier"){ va=tierRank(a.tier); vb=tierRank(b.tier); }
     else { va=a[sortKey]; vb=b[sortKey]; }
     if(va==null) va=-1e9; if(vb==null) vb=-1e9;
     if(typeof va==="string") return sortAsc? va.localeCompare(vb,"zh"):vb.localeCompare(va,"zh");
@@ -596,11 +630,9 @@ function renderTable(){
       if(d._chg.dir==="flat") chg='<span class="chg flat">持平</span>';
       else chg=`<span class="chg ${d._chg.dir}">${d._chg.dir==="up"?"▲":"▼"} ${Math.abs(d._chg.pct).toFixed(1)}%</span>`;
     }
-    const tier = `<span class="tier-tag ${TIER_CLASS[d.tier]||'t0'}">${d.tier}</span>`;
     return `<tr>
       <td><span class="dot" style="background:${COLORS[d.provider]||'#ccc'}"></span>${shortName(d.provider)}</td>
       <td>${d.model_short}</td>
-      <td>${tier}</td>
       <td class="num">${fmt(d.input)}</td>
       <td class="num">${fmt(d.output)}</td>
       <td class="num">${chg}</td>
@@ -629,8 +661,9 @@ function init(){
   renderKPI();
   renderChips();
   const provCount = new Set(DATA.map(d=>d.provider)).size;
+  const modelCount = new Set(DATA.filter(d=>d.date===LATEST).map(d=>d.model_id)).size;
   document.getElementById("sub_summary").textContent =
-    provCount+" 家厂商 · 旗舰/主力/轻量档位 · 全量模型入库";
+    provCount+" 家厂商 · "+modelCount+" 条主推产品线";
   syncScaleEnabled();
 
   drawTrend(); renderChangeBar(); drawCompare(); drawScatter(); drawRank();

@@ -30,6 +30,15 @@ plotly.min.js
 fetch_log.txt
 _cp_structure_seen.txt
 
+# 本地临时/调试产物（不上云）
+prices_backup_*.xlsx
+diagnose_*.py
+diagnose_screenshots/
+diagnose_text/
+_test*
+__test*
+__wtest*
+
 # 操作指南（仅本地参考）
 GITHUB_ACTIONS_MIGRATION.md
 
