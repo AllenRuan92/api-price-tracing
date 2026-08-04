@@ -13,7 +13,7 @@ API 价格抓取脚本（tokenpricing 版，全量 + 自建历史）
 
 口径（2026-08-04 版）：只跟踪**各家当前主推的产品线**，不做强/中/弱档位划分。
 白名单里每条 = 厂商的一条真实产品线（如 OpenAI 的 GPT 主线、GPT mini 线），
-每条取该线最新版本；每家有几条主推线就几条（1 条或 2 条，不强凑）。
+每条取该线最新版本；每家有几条主推线就几条（1~3 条，不强凑数量一致）。
 """
 
 import os
@@ -63,7 +63,8 @@ PROVIDER_DISPLAY = {
 # 趋势线按"厂商+产品线"连续不断。
 #
 # 每家跟几条按实际主推情况定，不强求数量一致：
-#  - OpenAI / Anthropic / Google / Qwen 各 2 条（主线 + 廉价量产线）
+#  - Anthropic 3 条（Opus 主线 + Sonnet 量产线 + Fable 长文本线）
+#  - OpenAI / Google / Qwen 各 2 条（主线 + 廉价量产线）
 #  - 智谱 / Kimi / MiniMax / DeepSeek 各 1 条（只有单一主推线）
 # 增删产品线：直接改这个字典即可，visualize.py 会自动跟着变。
 #
@@ -82,6 +83,7 @@ WATCHLIST = {
     "Anthropic": {
         "Claude Opus": rf"^claude-opus-{_V}$",
         "Claude Sonnet": rf"^claude-sonnet-{_V}$",
+        "Claude Fable": rf"^claude-fable-{_V}$",
     },
     "Google": {
         "Gemini Pro": rf"^gemini-{_V}-pro(?:-preview)?$",
