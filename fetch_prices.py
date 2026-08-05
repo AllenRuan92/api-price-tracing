@@ -77,8 +77,12 @@ PROVIDER_DISPLAY = {
 _V = r"(\d+(?:\.\d+)?)"          # 版本号捕获组
 WATCHLIST = {
     "OpenAI": {
-        "GPT": rf"^gpt-{_V}$",
-        "GPT mini": rf"^gpt-{_V}-mini$",
+        # OpenAI 从 5.6 代起把命名从数字改成代号（sol/terra/luna）：
+        #   sol=旗舰($5/$30，与裸名 gpt-5.6、gpt-chat-latest 同价)、terra=中杯、luna=nano档。
+        # 旗舰线兼容两种命名：裸名 gpt-5.7 或代号 gpt-5.6-sol 都能接上（谁版本高取谁）。
+        # mini 线接 terra（中杯，对应旧 gpt-*-mini）；luna 属 nano 档，按既有规则排除。
+        "GPT": rf"^gpt-{_V}(?:-sol)?$",
+        "GPT mini": rf"^gpt-{_V}(?:-mini|-terra)$",
     },
     "Anthropic": {
         "Claude Opus": rf"^claude-opus-{_V}$",
